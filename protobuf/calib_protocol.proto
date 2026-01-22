@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package robot_calib;
+
+import "google/protobuf/timestamp.proto";
+
+// --- 基础类型定义 ---
+
+message Vector3 {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+}
+
+message Quaternion {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+    double w = 4;
+}
+
+// 标定结果：变换矩阵 (R, t)
+message Transform {
+    string parent_frame = 1; // 父坐标系，如 "base_link"
+    string child_frame = 2;  // 子坐标系，如 "camera_front"
+    Vector3 translation = 3; // 平移
+    Quaternion rotation = 4; // 旋转
+}
+
+// --- 标定流程控制 ---
+
+enum CalibTaskType {
+    UNKNOWN = 0;
+    CAMERA_INTRINSIC = 1;    // 相机内参标定
+    LIDAR_TO_LIDAR = 2;      // 雷达-雷达外参
+    LIDAR_TO_CAMERA = 3;     // 雷达-相机外参
+    IMU_INTRINSIC = 4;       // IMU 偏置/标度因子
+    HAND_EYE = 5;            // 手眼标定（机械臂）
+}
+
+message CalibControl {
+    enum Action {
+        START = 0;           // 开始标定任务
+        STOP = 1;            // 强制停止
+        CAPTURE_SAMPLE = 2;  // 采集当前帧样本（用于棋盘格静态采样）
+        COMPUTE = 3;         // 开始计算最终结果
+        SAVE_RESULT = 4;     // 保存结果到本地/EEPROM
+    }
+    
+    Action action = 1;
+    CalibTaskType task_type = 2;
+    string session_id = 3;   // 标定任务 ID
+}
+
+// --- 状态反馈与数据 ---
+
+message CalibStatus {
+    enum State {
+        IDLE = 0;
+        SAMPLING = 1;        // 正在采集数据
+        PROCESSING = 2;      // 正在计算优化算法
+        SUCCESS = 3;
+        FAILED = 4;
+    }
+    
+    State state = 1;
+    int32 sample_count = 2;  // 已采集的有效样本数
+    float progress = 3;      // 计算进度 (0.0 - 1.0)
+    string error_msg = 4;    // 错误信息
+}
+
+// 标定结果报告
+message CalibResult {
+    bool is_valid = 1;
+    Transform ext_result = 2;       // 外参结果
+    repeated double int_result = 3; // 内参结果（如相机 D, K 矩阵）
+    double reprojection_error = 4;  // 重投影误差或残差（评估指标）
+}
+
+// --- 顶层通信封装 ---
+
+message CalibPacket {
+    google.protobuf.Timestamp timestamp = 1;
+    string device_id = 2;           // 设备序列号
+    
+    oneof payload {
+        CalibControl control = 3;   // 主控发送给标定平台
+        CalibStatus status = 4;     // 标定平台反馈状态
+        CalibResult result = 5;     // 标定平台返回最终结果
+    }
+}

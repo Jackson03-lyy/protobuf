@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package ros_sim;
+
+import "google/protobuf/timestamp.proto";
+
+// --- 基础几何结构 ---
+message Vector3 {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+}
+message Quaternion {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+    double w = 4;
+}
+message Pose {
+    Vector3 position = 1;
+    Quaternion orientation = 2;
+}
+// --- 关节控制模式枚举 ---
+enum ControlMode {
+    MODE_IDLE = 0;       // 怠速/放松模式（无力矩）
+    MODE_POSITION = 1;   // 位置控制（最常用：给定角度）
+    MODE_VELOCITY = 2;   // 速度控制（给定角速度）
+    MODE_EFFORT = 3;     // 力矩控制（直接控制电机电流/力矩）
+}
+
+// --- 关节属性定义 ---
+message JointState {
+    int32 id = 1;                // 关节索引 (0-N)
+    double position = 2;         // 当前角度 (Unit: rad)
+    double velocity = 3;         // 当前速度 (Unit: rad/s)
+    double effort = 4;           // 当前力矩 (Unit: N·m)
+    double temperature = 5;      // 仿真电机温度（可选，用于过热仿真）
+}
+
+// --- 控制指令集 ---
+message JointCommand {
+    ControlMode mode = 1;        // 控制模式切换
+    repeated double targets = 2; // 目标值（根据 mode 决定是 pos, vel 还是 effort）
+    
+    // 动态限制：在仿真运行时实时调整物理约束
+    optional double velocity_limit = 3; // 限制最大速度
+    optional double acceleration_limit = 4; // 限制最大加速度
+}
+
+// --- 仿真环境特有反馈 ---
+message SimulationFeedback {
+    google.protobuf.Timestamp stamp = 1; // 仿真同步时间戳
+    repeated JointState joint_states = 2; // 所有关节的实时数据包
+    
+    bool is_in_collision = 3;            // 机械臂是否发生碰撞
+    string collision_part = 4;           // 发生碰撞的连杆名称
+}
+
+// --- 顶层通信包装 (The Root Message) ---
+message ArmPacket {
+    // 头部信息
+    uint64 sequence_number = 1;          // 包序号，用于处理 UDP 乱序和丢包
+    string arm_id = 2;                   // 机械臂唯一标识（多机协同用）
+
+    oneof payload {
+        // 下行：主控 -> 仿真平台
+        JointCommand joint_cmd = 3;      
+        // 上行：仿真平台 -> 主控
+        SimulationFeedback sim_status = 4;
+        // 系统管理
+        SystemAction sys_action = 5;
+    }
+}
+
+message SystemAction {
+    enum Type {
+       START_SIMULATION = 0;   // 开始/启动仿真物理引擎
+       STOP_SIMULATION  = 1;   // 停止仿真（通常会冻结所有物理属性）
+       PAUSE_SIMULATION = 2;   // 暂停（画面冻结，状态保留）
+       RESUME_SIMULATION = 3;  // 恢复播放
+
+       // 状态重置
+       RESET_JOINTS_TO_ZERO = 4; // 仅重置关节角度
+       RELOAD_SCENE = 5;         // 重新加载整个场景（含障碍物）
+
+        // 调试辅助
+       ENABLE_GRAVITY = 6;     // 开启重力
+       DISABLE_GRAVITY = 7;   // 关闭重力
+    }
+    Type type = 1;
+    // 可选参数：比如跳转到特定的仿真时刻
+    optional double seek_time = 2;
+}
