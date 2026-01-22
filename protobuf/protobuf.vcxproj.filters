@@ -16,6 +16,5 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="ros.proto" />
-    <None Include="calib_protocol.proto" />
   </ItemGroup>
 </Project>
