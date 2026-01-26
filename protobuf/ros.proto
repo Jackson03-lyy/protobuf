@@ -23,28 +23,36 @@ message Pose {
 // --- 关节控制模式枚举 ---
 enum ControlMode {
     MODE_IDLE = 0;       // 怠速/放松模式（无力矩）
-    MODE_POSITION = 1;   // 位置控制（最常用：给定角度）
-    MODE_VELOCITY = 2;   // 速度控制（给定角速度）
-    MODE_EFFORT = 3;     // 力矩控制（直接控制电机电流/力矩）
+    MODE_POSITION = 1;   // 位置控制(给定角度, 弧度 (rad)）
+    MODE_VELOCITY = 2;   // 速度控制（给定角速度,弧度/秒 (rad/s)）
+    MODE_EFFORT = 3;     // 力矩控制（直接控制电机电流/力矩,牛·米 (N·m)）
 }
 
 // --- 关节属性定义 ---
 message JointState {
-    int32 id = 1;                // 关节索引 (0-N)
+    string name = 1;       // 关节名称 (如 "joint_1")
     double position = 2;         // 当前角度 (Unit: rad)
     double velocity = 3;         // 当前速度 (Unit: rad/s)
     double effort = 4;           // 当前力矩 (Unit: N·m)
     double temperature = 5;      // 仿真电机温度（可选，用于过热仿真）
 }
 
+message SingleJointCommand {
+    int32 joint_id = 1;
+    double target = 2;
+    // 可选性：为每个关节单独设置 PID，只有在调试或需要改变刚度时才发送，节省带宽.
+    optional double kp = 3;
+    optional double kd = 4;
+}
 // --- 控制指令集 ---
 message JointCommand {
-    ControlMode mode = 1;        // 控制模式切换
-    repeated double targets = 2; // 目标值（根据 mode 决定是 pos, vel 还是 effort）
-    
+    ControlMode mode = 1;
+    repeated SingleJointCommand commands = 2; 
+    // 结构化指令，防止顺序错误
+    google.protobuf.Timestamp header_time = 3; // 发送指令的时间戳
     // 动态限制：在仿真运行时实时调整物理约束
-    optional double velocity_limit = 3; // 限制最大速度
-    optional double acceleration_limit = 4; // 限制最大加速度
+    optional double velocity_limit = 4; // 限制最大速度
+    optional double acceleration_limit = 5; // 限制最大加速度
 }
 
 // --- 仿真环境特有反馈 ---
