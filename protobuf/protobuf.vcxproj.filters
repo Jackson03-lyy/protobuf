@@ -16,5 +16,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="ros.proto" />
+    <None Include="rcm.proto" />
+    <None Include="ros2.proto" />
   </ItemGroup>
 </Project>

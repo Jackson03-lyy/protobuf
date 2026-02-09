@@ -64,6 +64,23 @@ message SimulationFeedback {
     string collision_part = 4;           // 发生碰撞的连杆名称
 }
 
+// --- 心跳机制 ---
+message Heartbeat {
+    enum Status {
+        STATUS_UNKNOWN = 0;
+        STATUS_OK = 1;
+        STATUS_WARNING = 2;
+        STATUS_ERROR = 3;
+    }
+    
+    google.protobuf.Timestamp timestamp = 1;          // 发送时间
+    Status status = 2;                                // 系统状态
+    uint32 frame_counter = 3;                         // 帧计数器，用于丢包检测
+    double simulation_time = 4;                       // 当前仿真时间（秒）
+    optional string status_message = 5;               // 可选状态信息
+    repeated string warnings = 6;                     // 警告列表
+}
+
 // --- 顶层通信包装 (The Root Message) ---
 message ArmPacket {
     // 头部信息
@@ -77,6 +94,8 @@ message ArmPacket {
         SimulationFeedback sim_status = 4;
         // 系统管理
         SystemAction sys_action = 5;
+        // 心跳（双向）
+        Heartbeat heartbeat = 6;
     }
 }
 

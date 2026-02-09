@@ -1,0 +1,330 @@
+﻿syntax = "proto3";
+
+package ros_sim;
+
+import "google/protobuf/timestamp.proto";
+
+// ==============================================
+// 基础几何结构
+// ==============================================
+
+// 三维向量，用于表示位置、速度、力等物理量
+// 单位：米(m) 或 米/秒(m/s) 或 牛顿(N)
+message Vector3 {
+    double x = 1;  // X轴分量，使用float类型减少带宽占用，精度足够用于仿真
+    double y = 2;  // Y轴分量
+    double z = 3;  // Z轴分量
+}
+
+// 四元数，用于表示三维空间中的旋转姿态
+message Quaternion {
+    double x = 1;  // i分量（虚部）
+    double y = 2;  // j分量（虚部）
+    double z = 3;  // k分量（虚部）
+    double w = 4;  // 实部，单位四元数应满足 x²+y²+z²+w²=1
+}
+
+// 位姿，表示物体在三维空间中的位置和姿态
+// 用于设置/读取仿真模型的坐标系变换
+message Pose {
+    Vector3 position = 1;      // 位置向量（相对于世界坐标系）
+    Quaternion orientation = 2; // 旋转四元数（相对于世界坐标系）
+}
+
+// 速度旋量，包含线速度和角速度
+// 用于设置/读取模型的速度状态
+message Twist {
+    Vector3 linear = 1;   // 线速度，单位：米/秒(m/s)
+    Vector3 angular = 2;  // 角速度，单位：弧度/秒(rad/s)
+}
+
+// ==============================================
+// 模型标识
+// ==============================================
+
+// 仿真模型的唯一标识符
+// 支持同一场景中加载多个模型，通过namespace区分不同场景
+message ModelIdentifier {
+    string namespace = 1;  // 命名空间/场景名称，例如："warehouse_scene"
+    string model_name = 2; // 模型名称，例如："ur5_robot_1"
+    uint32 model_id = 3;   // 数字ID，用于快速索引和高效通信，由仿真平台分配
+}
+
+// ==============================================
+// 关节控制相关定义
+// ==============================================
+
+// 关节控制模式枚举
+// 定义机械臂关节的不同控制策略
+enum ControlMode {
+    MODE_IDLE = 0;       // 怠速/放松模式，关节无力矩输出，自由摆动
+    MODE_POSITION = 1;   // 位置控制模式，给定目标角度（单位：弧度rad）
+    MODE_VELOCITY = 2;   // 速度控制模式，给定目标角速度（单位：弧度/秒rad/s）
+    MODE_EFFORT = 3;     // 力矩控制模式，直接控制电机电流/力矩（单位：牛·米N·m）
+}
+
+// 单关节控制命令（压缩格式）
+// 用于高效传输关节级控制指令，支持>100Hz通信频率
+message JointCommand {
+    uint32 joint_index = 1;  // 关节索引（0-based），比使用字符串名称更高效
+    double target_value = 2;  // 目标值，含义根据ControlMode确定：位置(rad)/速度(rad/s)/力矩(N·m)
+    float kp = 3;            // 比例增益（仅位置/速度模式有效），PID控制器P参数
+    float kd = 4;            // 微分增益（仅位置/速度模式有效），PID控制器D参数
+    float ki = 5;            // 积分增益（仅位置/速度模式有效），PID控制器I参数
+    double max_velocity = 6;  // 最大速度限制（单位：rad/s），防止指令超限
+    double max_effort = 7;    // 最大力矩限制（单位：N·m），保护电机和减速器
+}
+
+// 模型控制指令
+// 用于设置单个仿真模型的运动状态（位姿、关节角等）
+message ModelControl {
+    ModelIdentifier model = 1;  // 目标模型标识
+    ControlMode mode = 2;       // 控制模式，决定如何解释后续命令数据
+    
+    // 完整状态控制：同时设置基座位姿和所有关节状态
+    // 用于需要精确同步多个自由度的场景
+    message FullState {
+        Pose base_pose = 1;           // 基座位姿（世界坐标系）
+        Twist base_twist = 2;         // 基座速度（线速度+角速度）
+        repeated float joint_positions = 3;   // 所有关节的目标位置数组（单位：rad）
+        repeated float joint_velocities = 4;  // 所有关节的目标速度数组（单位：rad/s）
+    }
+    
+    // 命令类型选择器，根据实际需求选择一种控制方式
+    oneof command_type {
+        FullState full_state = 3;            // 完整状态控制（高精度，适合初始化）
+        repeated JointCommand joint_commands = 4;  // 关节级独立控制（灵活，适合实时控制）
+        Pose base_pose_command = 5;          // 仅基座位姿控制（用于移动底盘）
+    }
+    
+    google.protobuf.Timestamp target_time = 6;  // 目标到达时间，支持前瞻控制和延迟补偿
+}
+
+// ==============================================
+// 模型状态反馈
+// ==============================================
+
+// 单关节状态反馈
+// 读取仿真模型中每个关节的实时状态
+message JointState {
+    uint32 index = 1;       // 关节索引（与JointCommand中的index对应）
+    double position = 2;     // 当前关节角度（单位：弧度rad）
+    double velocity = 3;     // 当前关节角速度（单位：弧度/秒rad/s）
+    double effort = 4;       // 当前关节力矩（单位：牛·米N·m）
+    float temperature = 5;  // 仿真电机温度（单位：摄氏度°C），用于过热保护仿真
+    bool limit_triggered = 6; // 是否触发软/硬限位，true表示已到达运动边界
+}
+
+// 完整模型状态反馈
+// 读取任意仿真模型的完整状态信息，包括位姿、关节角、碰撞等
+message ModelState {
+    ModelIdentifier model = 1;  // 模型标识
+    Pose base_pose = 2;         // 当前基座位姿（世界坐标系）
+    Twist base_twist = 3;       // 当前基座速度（线速度+角速度）
+    repeated JointState joints = 4;  // 所有关节的状态数组
+    
+    // 碰撞检测信息
+    // 当模型与其他物体发生碰撞时，提供详细接触信息
+    message CollisionInfo {
+        string colliding_with = 1;     // 碰撞对象名称（其他模型或环境物体）
+        Vector3 contact_point = 2;     // 接触点位置（世界坐标系）
+        Vector3 contact_force = 3;     // 接触力向量（单位：牛顿N）
+        Vector3 contact_normal = 4;    // 接触面法线向量（单位向量）
+    }
+    repeated CollisionInfo collisions = 5;  // 当前所有碰撞信息，空数组表示无碰撞
+    
+    // 可选传感器数据（仿真平台支持时提供）
+    repeated float force_torque = 6;   // 6维力/力矩传感器读数 [Fx, Fy, Fz, Tx, Ty, Tz]
+    repeated float imu_data = 7;       // 9维IMU数据 [ax, ay, az, gx, gy, gz, mx, my, mz]
+    
+    google.protobuf.Timestamp stamp = 8;  // 状态时间戳（仿真时间）
+}
+
+// ==============================================
+// 仿真环境管理
+// ==============================================
+
+// 模型描述信息
+// 用于加载新的仿真模型到场景中
+message ModelDescription {
+    ModelIdentifier model = 1;  // 模型标识
+    string urdf_path = 2;       // URDF/SDF文件路径（本地路径或URL）
+    Pose initial_pose = 3;      // 初始位姿（世界坐标系）
+    
+    // 关节配置信息
+    message JointConfig {
+        string name = 1;        // 关节名称（如"shoulder_pan_joint"）
+        string type = 2;        // 关节类型："revolute"（旋转）, "prismatic"（平移）, "fixed"（固定）等
+        float lower_limit = 3;  // 位置下限（单位：rad或m）
+        float upper_limit = 4;  // 位置上限（单位：rad或m）
+        float max_velocity = 5; // 最大允许速度（单位：rad/s或m/s）
+        float max_effort = 6;   // 最大允许力矩/力（单位：N·m或N）
+    }
+    repeated JointConfig joints = 4;  // 所有关节的配置信息
+    
+    // 碰撞相关配置
+    bool enable_collision = 5;        // 是否启用碰撞检测（默认true）
+    string collision_group = 6;       // 碰撞组名称，同组内的模型不检测碰撞
+}
+
+// 场景配置
+// 定义仿真环境的物理属性和全局参数
+message SceneConfig {
+    string scene_name = 1;            // 场景名称，用于标识和保存
+    Vector3 gravity = 2;              // 重力加速度向量（单位：m/s²），默认(0,0,-9.81)
+    float physics_update_rate = 3;    // 物理引擎更新频率（单位：Hz），影响仿真精度和性能
+    
+    // 环境物理参数
+    float ground_friction = 4;        // 地面摩擦系数（0-1），影响物体滑动
+    float ground_restitution = 5;     // 地面恢复系数（0-1），影响碰撞反弹
+}
+// ==============================================
+// 系统控制指令
+// ==============================================
+
+// 系统级控制命令
+// 用于管理仿真平台的整体行为
+message SystemCommand {
+    // 系统动作类型枚举
+    enum Action {
+        // 场景管理
+        LOAD_SCENE = 0;           // 加载新场景（替换当前场景）
+        UNLOAD_SCENE = 1;         // 卸载当前场景（清空所有模型）
+        
+        // 模型管理
+        SPAWN_MODEL = 2;          // 添加模型（添加到当前场景）
+        DELETE_MODEL = 3;         // 删除指定模型（从场景中移除）
+        RESET_MODEL = 4;          // 重置模型到初始状态（位置和姿态）
+         
+        // 仿真控制
+        START_SIMULATION = 5;     // 启动仿真（开始物理计算）
+        PAUSE_SIMULATION = 6;     // 暂停仿真（冻结所有物理状态）
+        RESUME_SIMULATION = 7;    // 恢复仿真（从暂停状态继续）
+        STOP_SIMULATION = 8;      // 停止仿真（结束当前仿真会话）
+        STEP_SIMULATION = 9;      // 单步仿真（执行一个物理步长）
+        
+        // 参数设置
+        SET_GRAVITY = 10;         // 修改重力向量
+        SET_TIMESCALE = 11;       // 设置时间缩放因子（加速/减速仿真）
+        SET_PHYSICS_PARAMS = 12;  // 设置物理引擎参数（如求解器迭代次数）
+        
+        // 数据记录
+        START_RECORDING = 13;     // 开始记录仿真数据（用于回放和分析）
+        STOP_RECORDING = 14;      // 停止记录
+        SAVE_SNAPSHOT = 15;       // 保存场景快照（包含所有模型状态）
+    }
+    
+    Action action = 1;  // 要执行的动作类型
+    
+    // 动作参数选择器（根据action类型选择相应的参数）
+    oneof params {
+        SceneConfig scene_config = 2;  // 场景配置（用于LOAD_SCENE动作）
+        ModelDescription model_desc = 3; // 模型描述（用于SPAWN_MODEL动作）
+        float float_param = 4;    // 浮点参数（用于SET_TIMESCALE等）
+        Vector3 vector_param = 5; // 向量参数（用于SET_GRAVITY等）
+    }
+    
+    google.protobuf.Timestamp timestamp = 6;  // 命令时间戳（用于同步）
+}
+
+// ==============================================
+// 心跳与连接状态
+// ==============================================
+
+// 心跳消息
+// 用于维护客户端和仿真平台之间的连接状态，检测断连和网络质量
+message Heartbeat {
+    // 连接状态枚举
+    enum ConnectionStatus {
+        DISCONNECTED = 0;   // 未连接
+        CONNECTING = 1;     // 连接中（握手阶段）
+        CONNECTED = 2;      // 已连接（正常工作）
+        SYNCING = 3;        // 同步中（时间同步或状态同步）
+        ERROR = 4;          // 错误状态（需要处理）
+    }
+    
+    ConnectionStatus status = 1;         // 当前连接状态
+    uint64 frame_counter = 2;            // 帧计数器（单调递增），用于检测丢包
+    google.protobuf.Timestamp client_time = 3;  // 客户端发送时间
+    google.protobuf.Timestamp server_time = 4;  // 服务器时间（由服务器填充返回）
+    
+    // 性能统计信息（用于监控和优化）
+    float client_fps = 5;                // 客户端发送频率（单位：Hz）
+    float server_fps = 6;                // 服务器更新频率（单位：Hz）
+    float network_latency = 7;           // 网络延迟估计（单位：毫秒ms）
+    float jitter = 8;                    // 网络抖动（延迟变化量，单位：ms）
+    uint32 packets_lost = 9;             // 累计丢包数（基于sequence检测）
+    
+    // 资源使用情况（服务器端报告）
+    float cpu_usage = 10;                // CPU使用率（0-1）
+    float memory_usage = 11;             // 内存使用率（0-1）
+    float sim_speed = 12;                // 仿真速度倍数（1.0=实时）
+}
+
+// ==============================================
+// 顶层消息包装
+// ==============================================
+
+// 仿真通信数据包（根消息）
+// 所有通信消息的统一包装格式，通过type字段区分不同消息类型
+message SimulationPacket {
+    // 头部信息
+    uint64 sequence = 1;                // 序列号（单调递增），用于检测丢包和乱序
+    google.protobuf.Timestamp timestamp = 2;  // 消息发送时间（客户端时间）
+    
+    // 消息类型枚举
+    enum PacketType {
+        TYPE_UNKNOWN = 0;          // 未知类型（错误或未设置）
+        TYPE_MODEL_CONTROL = 1;    // 模型控制指令（客户端→服务器）
+        TYPE_MODEL_STATE = 2;      // 模型状态反馈（服务器→客户端）
+        TYPE_SYSTEM_COMMAND = 3;   // 系统控制指令（客户端→服务器）
+        TYPE_HEARTBEAT = 4;        // 心跳包（双向通信）
+        TYPE_ACK = 5;              // 确认包（服务器→客户端）
+        TYPE_ERROR = 6;            // 错误消息（双向通信）
+    }
+    PacketType type = 3;            // 消息类型，决定如何解析payload
+    
+    // 载荷数据（根据type选择一种）
+    oneof payload {
+        ModelControl model_control = 4;  // 模型控制指令
+        ModelState model_state = 5;      // 模型状态反馈
+        SystemCommand system_cmd = 6;    // 系统控制指令
+        Heartbeat heartbeat = 7;         // 心跳包
+    }
+    
+    // 可选：可靠传输机制字段
+    optional uint32 ack_sequence = 8;    // 需要确认的序列号（用于可靠传输）
+    optional uint32 request_id = 9;      // 请求ID（用于匹配请求和响应）
+}
+
+// ==============================================
+// 辅助消息类型
+// ==============================================
+
+// 确认消息
+// 用于可靠传输机制，确认已收到指定序列号的消息
+message Acknowledge {
+    uint32 ack_sequence = 1;             // 确认的序列号
+    google.protobuf.Timestamp ack_time = 2;  // 确认时间（服务器时间）
+}
+
+// 错误消息
+// 当仿真平台遇到错误时返回，包含错误码和详细信息
+message ErrorMessage {
+    // 错误码枚举
+    enum ErrorCode {
+        ERROR_NONE = 0;                  // 无错误
+        ERROR_INVALID_COMMAND = 1;       // 无效命令（格式错误或参数非法）
+        ERROR_MODEL_NOT_FOUND = 2;       // 模型不存在（引用错误）
+        ERROR_JOINT_LIMIT_EXCEEDED = 3;  // 关节超限（超出位置/速度/力矩限制）
+        ERROR_COLLISION_DETECTED = 4;    // 碰撞检测（命令导致碰撞）
+        ERROR_COMMUNICATION_TIMEOUT = 5; // 通信超时（心跳丢失）
+        ERROR_SIMULATION_STOPPED = 6;    // 仿真已停止（不接受控制命令）
+        ERROR_RESOURCE_LIMIT = 7;        // 资源限制（内存不足或模型数量超限）
+    }
+    
+    ErrorCode code = 1;                  // 错误码
+    string message = 2;                  // 错误描述（人类可读）
+    string details = 3;                  // 错误详情（调试信息）
+    google.protobuf.Timestamp timestamp = 4;  // 错误发生时间
+}

@@ -1,0 +1,743 @@
+﻿syntax = "proto3";
+
+package rcm_master_slave;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// ==================== 基础数据类型 ====================
+
+// 3D向量
+message Vector3 {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+    string frame_id =4;
+}
+
+// 四元数姿态
+message Quaternion {
+    double x = 1;
+    double y = 2;
+    double z = 3;
+    double w = 4;
+    string frame_id =5;
+}
+
+// 位姿
+message Pose {
+    Vector3 position = 1;           // 位置 (mm)
+    Quaternion orientation = 2;     // 姿态
+    google.protobuf.Timestamp timestamp = 3;
+}
+
+// ==================== 系统级定义 ====================
+
+// 控制模式
+enum ControlMode {
+    MODE_IDLE = 0;              // 空闲模式
+    MODE_MASTER_SLAVE = 1;      // 主从模式（主手控制从手）
+    MODE_POSITION = 2;          // 点位运动模式
+    MODE_JOINT_POSITION = 3;    // 机械臂关节位置伺服模式
+}
+
+// 优先级
+enum Priority {
+    PRIORITY_NORMAL = 0;        // 普通优先级
+    PRIORITY_HIGH = 1;          // 高优先级
+    PRIORITY_EMERGENCY = 2;     // 紧急优先级
+}
+
+// 设备类型
+enum DeviceType {
+    DEVICE_UNKNOWN = 0;
+    DEVICE_MASTER_HAND = 1;     // 主手设备（采集XYZ数据）
+    DEVICE_CONTROL_CARD = 2;    // 控制卡（接收主手数据，控制电机）
+    DEVICE_ROBOT_ARM = 3;       // 机械臂（独立控制关节）
+    DEVICE_DRIVE_MODULE = 4;    // 电机驱动模块（属于控制卡）
+    DEVICE_HOST_COMPUTER = 5;   // 上位机（进行运动学计算）
+} 
+
+// 安全状态
+enum SafetyStatus {
+    SAFETY_NORMAL = 0;       // 正常状态
+    SAFETY_WARNING = 1;      // 警告（可继续运行）
+    SAFETY_ERROR = 2;        // 错误（停止运动）
+    SAFETY_EMERGENCY = 3;    // 急停激活
+    SAFETY_FAULT = 4;        // 系统故障
+}
+
+// ==================== 主手数据采集 ====================
+
+// 主手XYZ轴原始数据（从主手设备采集）
+message MasterRawData {
+    // 主手设备ID
+    string master_device_id = 1;
+    
+    // 位置数据（XYZ轴）
+    Vector3 position = 2;          // 位置 (mm)
+    Quaternion orientation = 3;    // 姿态
+    
+    // 速度数据
+    Vector3 linear_velocity = 4;   // 线速度 (mm/s)
+    Vector3 angular_velocity = 5;  // 角速度 (rad/s)
+    
+    // 力/力矩数据（如果有力反馈）
+    Vector3 force = 6;             // 力反馈 (N)
+    Vector3 torque = 7;            // 力矩反馈 (N·m)
+    
+    // 按钮和状态
+    uint32 button_state = 8;       // 按钮状态（位掩码）
+    bool is_active = 9;            // 主手是否激活
+    
+    // 序列号和时序
+    uint64 sequence_number = 10;   // 序列号（递增）
+    google.protobuf.Timestamp timestamp = 11;
+}
+
+// ==================== 控制卡控制命令 ====================
+
+// 控制卡命令头
+message ControlCardHeader {
+    uint64 command_id = 1;                    // 唯一命令ID
+    google.protobuf.Timestamp send_time = 2;  // 发送时间
+    Priority priority = 3;                    // 命令优先级
+    string source = 4;                        // 命令来源（如"master_hand", "host_computer"）
+    uint32 timeout_ms = 5;                    // 超时时间 (ms)
+}
+
+// 控制卡运动命令（发送给控制卡，控制电机运动）
+message ControlCardMotionCommand {
+    ControlCardHeader header = 1;
+    ControlMode mode = 2;
+    
+    // 运动参数（主从模式时使用）
+    message MasterSlaveControl {
+        Pose target_pose = 1;          // 目标位姿（来自主手或计算后）
+        Vector3 velocity = 2;          // 目标速度
+        Vector3 acceleration = 3;      // 加速度
+    }
+    
+    // 点位运动模式参数
+    message PositionControl {
+        Pose target_pose = 1;          // 目标位姿
+        double velocity = 2;           // 运动速度 (mm/s)
+    }
+    
+    oneof control_params {
+        MasterSlaveControl master_slave = 3;  // 主从控制参数
+        PositionControl position = 4;         // 点位控制参数
+    }
+    
+    // 运动限制
+    double max_velocity = 5;          // 最大速度限制
+    double max_acceleration = 6;      // 最大加速度限制
+    double max_jerk = 7;              // 最大加加速度限制
+}
+
+// ==================== 控制卡电机反馈 ====================
+
+// 单电机状态
+message ControlCardMotorState {
+    uint32 motor_id = 1;              // 电机ID（对应XYZ轴或旋转轴）
+    
+    // 位置相关
+    double position = 2;              // 当前位置（脉冲或mm/角度）
+    double target_position = 3;       // 目标位置
+    double position_error = 4;        // 位置误差
+    
+    // 速度相关
+    double velocity = 5;              // 当前速度
+    double target_velocity = 6;       // 目标速度
+    
+    // 电流/扭矩
+    double current = 7;               // 电流 (A)
+    double torque = 8;                // 扭矩 (Nm)
+    
+    // 状态
+    double temperature = 9;           // 温度 (°C)
+    uint32 error_code = 10;           // 错误码
+    bool enabled = 11;                // 使能状态
+    bool in_position = 12;            // 是否到位
+    
+    google.protobuf.Timestamp timestamp = 13;
+}
+
+// 控制卡整体状态（返回给上位机）
+message ControlCardStatus {
+    // 控制卡信息
+    string card_id = 1;
+    uint32 card_status = 2;           // 控制卡状态（位掩码）
+    
+    // 电机状态（对应XYZ轴和旋转轴）
+    repeated ControlCardMotorState motors = 3;
+    
+    // 总线状态
+    double bus_voltage = 4;           // 总线电压 (V)
+    double bus_current = 5;           // 总线电流 (A)
+    
+    // 性能指标
+    uint64 cycle_count = 6;           // 控制循环计数
+    double cycle_time = 7;            // 实际控制周期时间 (ms)
+    double cpu_usage = 8;             // CPU使用率
+    
+    // 运动学相关数据（用于上位机计算）
+    Pose current_pose = 9;            // 当前末端位姿
+    Pose target_pose = 10;            // 目标末端位姿
+    
+    // 安全状态
+    bool emergency_stop_active = 11;  // 急停是否激活
+    bool limit_switch_triggered = 12; // 限位开关触发
+    
+    google.protobuf.Timestamp timestamp = 13;
+}
+
+// ==================== 机械臂关节控制 ====================
+
+// 关节位置伺服命令（从上位机发送给机械臂）
+message JointServoCommand {
+    // 命令头
+    message Header {
+        uint64 command_id = 1;                    // 命令ID
+        google.protobuf.Timestamp send_time = 2;  // 发送时间
+        uint32 sequence_number = 3;               // 序列号（用于同步）
+        uint64 timestamp_us = 4;                  // 时间戳（微秒，用于高精度同步）
+    }
+    
+    Header header = 1;
+    
+    // 目标关节位置（根据运动学计算结果）
+    repeated float target_positions = 2;      // 目标关节角 (弧度)
+    
+    // 伺服控制参数
+    repeated float velocities = 3;             // 关节速度 (rad/s)
+    repeated float accelerations = 4;         // 关节加速度 (rad/s²)
+    repeated float jerks = 5;                 // 关节加加速度 (rad/s³)
+    
+    // 控制参数
+    bool use_feedforward = 6;                 // 是否使用前馈控制
+    double interpolation_time = 7;            // 插补时间 (ms)
+    repeated ErrorCode errors = 8;            // 关节错误码
+}
+
+// 机械臂关节状态
+message RobotJointStatus {
+    // 实际测量值
+    float joint_pos_j = 1;          // 当前关节角 (弧度) - jointPosJ
+    int32 joint_speed_moto = 2;     // 电机速度 - jointSpeedMoto
+    int32 joint_current1 = 3;       // 关节电流 (mA) - jointCurrent1
+    float joint_cur_vol = 4;        // 关节电压 (mV) - jointCurVol
+    float joint_cur_temp = 5;       // 当前温度 (°C) - jointCurTemp
+    
+    // 目标命令值
+    float joint_tag_pos_j = 6;      // 目标关节角 (弧度) - jointTagPosJ
+    float joint_tag_speed_moto = 7; // 电机目标速度 - jointTagSpeedMoto
+    int32 joint_tag_current1 = 8;   // 电机目标电流 (mA) - jointTagCurrent1
+    
+    // 状态信息
+    ErrorCode joint_error_num = 9;     // 关节错误码 - jointErrorNum
+    bool joint_enabled = 10;        // 关节使能状态
+    bool joint_in_position = 11;    // 是否到位
+    
+    google.protobuf.Timestamp timestamp = 12;
+}
+
+// 机械臂整体状态
+message RobotArmStatus {
+    string arm_id = 1;                     // 机械臂ID
+    
+    // 所有关节状态
+    repeated RobotJointStatus joints = 2;  // 通常6个关节
+    
+    // 末端信息
+    Pose tcp_pose = 3;                     // TCP当前位姿（从运动学正解得到）
+    Pose flange_pose = 4;                  // 法兰盘位姿
+    
+    // 运动状态
+    bool is_moving = 5;                    // 是否在运动中
+    bool is_collided = 6;                  // 是否发生碰撞
+    
+    // 控制状态
+    ControlMode control_mode = 7;          // 当前控制模式
+    uint32 active_command_id = 8;          // 当前活动命令ID
+    
+    // 错误状态
+    uint32 robot_error_code = 9;           // 机器人整体错误码
+    uint32 active_error_count = 10;        // 活动错误数量
+    
+    google.protobuf.Timestamp timestamp = 11;
+}
+
+// ==================== 系统状态与配置 ====================
+
+// 主从映射配置
+message MasterSlaveConfig {
+    // 运动映射
+    double position_scale = 1;      // 位置缩放比例（主手到控制卡）
+    double velocity_scale = 2;      // 速度缩放比例
+    
+    // 坐标系映射
+    Pose coordinate_transform = 3;  // 坐标变换（主手到控制卡坐标系）
+    
+    // 安全限制
+    double max_velocity = 4;        // 最大速度限制
+    double max_acceleration = 5;    // 最大加速度限制
+    Pose workspace_limit_min = 6;   // 工作空间下限
+    Pose workspace_limit_max = 7;   // 工作空间上限
+    
+    // 机械臂运动学配置
+    repeated double dh_parameters_a = 8;      // DH参数 a
+    repeated double dh_parameters_alpha = 9;  // DH参数 α
+    repeated double dh_parameters_d = 10;     // DH参数 d
+    repeated double dh_parameters_theta = 11; // DH参数 θ
+    Pose base_transform = 12;                 // 基座标变换
+    Pose tool_transform = 13;                 // 工具坐标变换
+}
+
+// 系统状态
+message SystemStatus {
+    // 设备连接状态
+    message DeviceStatus {
+        DeviceType type = 1;
+        string device_id = 2;
+        bool connected = 3;
+        bool operational = 4;
+        google.protobuf.Timestamp last_heartbeat = 5;
+    }
+    
+    repeated DeviceStatus devices = 1;
+    
+    // 控制卡状态
+    ControlCardStatus control_card = 2;
+    
+    // 机械臂状态
+    RobotArmStatus robot_arm = 3;
+    
+    // 安全状态
+    SafetyStatus safety_status = 4;
+    bool emergency_stop_active = 5;
+    
+    // 系统性能
+    double system_cpu_usage = 6;
+    double system_memory_usage = 7;
+    uint64 uptime_seconds = 8;
+    
+    google.protobuf.Timestamp timestamp = 9;
+}
+
+// ==================== 命令反馈 ====================
+
+// 控制卡命令反馈
+message ControlCardFeedback {
+    enum Status {
+        STATUS_ACCEPTED = 0;      // 命令已接受
+        STATUS_EXECUTING = 1;     // 执行中
+        STATUS_COMPLETED = 2;     // 完成
+        STATUS_CANCELLED = 3;     // 取消
+        STATUS_ERROR = 4;         // 错误
+    }
+    
+    uint64 command_id = 1;        // 对应的命令ID
+    Status status = 2;
+    double progress = 3;          // 进度 [0-1]
+    
+    // 当前状态
+    ControlCardStatus current_state = 4;
+    
+    // 错误信息
+    string error_message = 5;
+    uint32 error_code = 6;
+    
+    google.protobuf.Timestamp timestamp = 7;
+}
+
+// 机械臂命令反馈
+message RobotArmFeedback {
+    enum Status {
+        STATUS_ACCEPTED = 0;      // 命令已接受
+        STATUS_EXECUTING = 1;     // 执行中
+        STATUS_COMPLETED = 2;     // 完成
+        STATUS_CANCELLED = 3;     // 取消
+        STATUS_ERROR = 4;         // 错误
+    }
+    
+    uint64 command_id = 1;        // 对应的命令ID
+    Status status = 2;
+    double progress = 3;          // 进度 [0-1]
+    
+    // 当前状态
+    RobotArmStatus current_state = 4;
+    
+    // 错误信息
+    string error_message = 5;
+    uint32 error_code = 6;
+    
+    google.protobuf.Timestamp timestamp = 7;
+}
+
+// ==================== 服务接口 ====================
+
+// 控制卡服务（负责主从模式控制）
+service ControlCardService {
+    // ========== 主从模式控制 ==========
+    
+    // 流式发送主手数据（主从模式）
+    rpc StreamMasterData(stream MasterRawData) returns (stream ControlCardFeedback);
+    
+    // 发送控制卡运动命令
+    rpc SendControlCardCommand(ControlCardMotionCommand) returns (ControlCardFeedback);
+    
+    // ========== 状态查询 ==========
+    
+    // 获取控制卡状态
+    rpc GetControlCardStatus(google.protobuf.Empty) returns (ControlCardStatus);
+    
+    // 订阅控制卡状态（高频）
+    rpc SubscribeControlCardStatus(SubscriptionRequest) returns (stream ControlCardStatus);
+    
+    // ========== 配置管理 ==========
+    
+    // 设置主从配置
+    rpc SetMasterSlaveConfig(MasterSlaveConfig) returns (ConfigResponse);
+    
+    // ========== 系统控制 ==========
+    
+    // 使能控制卡
+    rpc EnableControlCard(google.protobuf.Empty) returns (ControlCardFeedback);
+    
+    // 禁用控制卡
+    rpc DisableControlCard(google.protobuf.Empty) returns (ControlCardFeedback);
+    
+    // 急停控制卡
+    rpc EmergencyStopControlCard(EmergencyStopRequest) returns (ControlCardFeedback);
+}
+
+// 机械臂服务（负责关节位置伺服控制）
+service RobotArmService {
+    // ========== 关节位置伺服控制 ==========
+    
+    // 流式发送关节位置命令（伺服模式）
+    rpc StreamJointPositions(stream JointServoCommand) returns (stream RobotArmFeedback);
+    
+    // 发送单次关节位置命令
+    rpc SendJointPositionCommand(JointPositionCommand) returns (RobotArmFeedback);
+    
+    // ========== 状态查询 ==========
+    
+    // 获取机械臂状态
+    rpc GetRobotArmStatus(google.protobuf.Empty) returns (RobotArmStatus);
+    
+    // 获取关节状态
+    rpc GetJointStatus(google.protobuf.Empty) returns (JointStatusResponse);
+    
+    // 订阅机械臂状态（高频）
+    rpc SubscribeRobotArmStatus(SubscriptionRequest) returns (stream RobotArmStatus);
+    
+    // 订阅关节状态（高频）
+    rpc SubscribeJointStatus(SubscriptionRequest) returns (stream JointStatusResponse);
+    
+    // ========== 系统控制 ==========
+    
+    // 使能机械臂
+    rpc EnableRobotArm(google.protobuf.Empty) returns (RobotArmFeedback);
+    
+    // 禁用机械臂
+    rpc DisableRobotArm(google.protobuf.Empty) returns (RobotArmFeedback);
+    
+    // 关节回零
+    rpc HomeJoints(HomeRequest) returns (RobotArmFeedback);
+    
+    // 急停机械臂
+    rpc EmergencyStopRobotArm(EmergencyStopRequest) returns (RobotArmFeedback);
+}
+
+// 上位机协调服务（负责整体协调）
+service HostComputerService {
+    // ========== 运动学计算接口 ==========
+    
+    // 正向运动学（关节角度 -> 末端位姿）
+    rpc ForwardKinematics(ForwardKinematicsRequest) returns (ForwardKinematicsResponse);
+    
+    // 逆向运动学（末端位姿 -> 关节角度）
+    rpc InverseKinematics(InverseKinematicsRequest) returns (InverseKinematicsResponse);
+    
+    // 轨迹规划（从当前点到目标点）
+    rpc PlanTrajectory(TrajectoryPlanningRequest) returns (TrajectoryPlanningResponse);
+    
+    // ========== 系统协调接口 ==========
+    
+    // 启动主从模式
+    rpc StartMasterSlaveMode(MasterSlaveStartRequest) returns (MasterSlaveResponse);
+    
+    // 停止主从模式
+    rpc StopMasterSlaveMode(google.protobuf.Empty) returns (MasterSlaveResponse);
+    
+    // 获取系统状态
+    rpc GetSystemStatus(google.protobuf.Empty) returns (SystemStatus);
+    
+    // 订阅系统状态
+    rpc SubscribeSystemStatus(SubscriptionRequest) returns (stream SystemStatus);
+    
+    // ========== 配置管理 ==========
+    // 加载系统配置
+    rpc LoadSystemConfig(SystemConfigRequest) returns (ConfigResponse);
+    
+    // 保存系统配置
+    rpc SaveSystemConfig(SystemConfigRequest) returns (ConfigResponse);
+
+    // ========== 设备管理接口 ==========
+    // 设备注册（设备启动时调用）
+    rpc RegisterDevice(DeviceRegistration) returns (DeviceRegistrationResponse);
+    
+    // 设备心跳（定期调用）
+    rpc Heartbeat(DeviceHeartbeat) returns (HeartbeatResponse);
+    
+    // 设备注销（设备关闭时调用）
+    rpc UnregisterDevice(DeviceUnregisterRequest) returns (google.protobuf.Empty);
+    
+    // 获取所有已注册设备
+    rpc GetRegisteredDevices(google.protobuf.Empty) returns (RegisteredDevicesResponse);
+}
+
+// ==================== 请求/响应消息 ====================
+
+// 关节位置命令（单次，非流式）
+message JointPositionCommand {
+    repeated float target_positions = 1;  // 目标关节角 (弧度)
+    double velocity = 2;                  // 归一化速度 (0-1)
+    double acceleration = 3;              // 归一化加速度 (0-1)
+    double duration = 4;                  // 运动时间 (s)
+    bool wait_for_completion = 5;         // 是否等待完成
+}
+
+// 关节状态响应
+message JointStatusResponse {
+    repeated RobotJointStatus joints = 1;
+    uint32 active_error_count = 2;
+    bool all_enabled = 3;
+    bool all_in_position = 4;
+    float max_temperature = 5;
+    google.protobuf.Timestamp timestamp = 6;
+}
+
+// 订阅请求
+message SubscriptionRequest {
+    uint32 update_rate_hz = 1;              // 更新频率 (Hz)
+    bool enable_compression = 2;            // 是否启用压缩
+}
+
+// 配置响应
+message ConfigResponse {
+    bool success = 1;
+    string message = 2;
+    google.protobuf.Timestamp timestamp = 3;
+}
+
+// 急停请求
+message EmergencyStopRequest {
+    enum StopType {
+        SOFT_STOP = 0;      // 软停止（减速停止）
+        HARD_STOP = 1;      // 硬停止（立即停止）
+    }
+    StopType type = 1;
+    string reason = 2;
+}
+
+// 回零请求
+message HomeRequest {
+    repeated uint32 joint_ids = 1;      // 要回零的关节ID（空表示所有）
+    HomeMethod method = 2;              // 回零方法
+}
+
+enum HomeMethod {
+    HOME_MANUAL = 0;        // 手动回零
+    HOME_INDEX = 1;         // 索引脉冲回零
+    HOME_LIMIT = 2;         // 限位开关回零
+}
+
+// 运动学计算请求
+message ForwardKinematicsRequest {
+    repeated float joint_angles = 1;    // 关节角度 (弧度)
+    bool include_jacobian = 2;          // 是否包含雅可比矩阵
+}
+
+message ForwardKinematicsResponse {
+    Pose end_effector_pose = 1;         // 末端执行器位姿
+    repeated double jacobian_matrix = 2; // 雅可比矩阵（6×6）
+    double calculation_time_ms = 3;     // 计算时间 (ms)
+}
+
+message InverseKinematicsRequest {
+    Pose target_pose = 1;               // 目标位姿
+    uint32 solution_index = 2;          // 解索引（多解时选择）
+}
+
+message InverseKinematicsResponse {
+    repeated float joint_angles = 1;    // 关节角度解 (弧度)
+    double error_norm = 2;              // 误差范数
+    bool solution_found = 3;            // 是否找到解
+    double calculation_time_ms = 4;     // 计算时间 (ms)
+}
+
+// 轨迹规划请求
+message TrajectoryPlanningRequest {
+    Pose start_pose = 1;                // 起始位姿
+    Pose end_pose = 2;                  // 终止位姿
+    double max_velocity = 3;            // 最大速度
+    double max_acceleration = 4;        // 最大加速度
+    double max_jerk = 5;                // 最大加加速度
+    double duration = 6;                // 期望持续时间（0表示自动计算）
+}
+
+message TrajectoryPlanningResponse {
+    repeated TrajectoryPoint points = 1; // 轨迹点
+    double total_duration = 2;          // 总持续时间
+    double calculation_time_ms = 3;     // 计算时间 (ms)
+}
+
+message TrajectoryPoint {
+    Pose pose = 1;                      // 位姿
+    Vector3 velocity = 2;               // 速度
+    Vector3 acceleration = 3;           // 加速度
+    double time_from_start = 4;         // 从开始的时间 (s)
+    repeated float joint_angles = 5;    // 对应的关节角度
+}
+
+// 主从模式启动请求
+message MasterSlaveStartRequest {
+    MasterSlaveConfig config = 1;       // 主从配置
+    bool enable_force_feedback = 2;     // 是否启用力反馈
+    double update_rate_hz = 3;          // 更新频率 (Hz)
+}
+
+message MasterSlaveResponse {
+    bool success = 1;
+    string message = 2;
+    MasterSlaveStatus status = 3;
+}
+
+message MasterSlaveStatus {
+    bool active = 1;                    // 是否激活
+    double position_scale = 2;          // 当前位置缩放比例
+    double velocity_scale = 3;          // 当前速度缩放比例
+    double latency_ms = 4;              // 控制延迟 (ms)
+    google.protobuf.Timestamp start_time = 5;
+}
+
+// 系统配置请求
+message SystemConfigRequest {
+    string config_file_path = 1;        // 配置文件路径
+    bool validate_only = 2;             // 仅验证不应用
+}
+
+// 设备心跳
+message DeviceHeartbeat {
+    string device_id = 1;
+    DeviceType type = 2;
+    bool operational = 3;
+    uint32 error_count = 4;
+    google.protobuf.Timestamp timestamp = 5;
+}
+
+message HeartbeatResponse {
+    bool acknowledged = 1;
+    google.protobuf.Timestamp server_time = 2;  // 用于时间同步
+    uint32 next_heartbeat_interval_ms = 3;      // 建议的下次心跳间隔
+    repeated SystemCommand system_commands = 4; // 系统可能下发的命令
+}
+
+// 系统命令（通过心跳响应下发）
+message SystemCommand {
+    enum CommandType {
+        COMMAND_NONE = 0;
+        COMMAND_RECONNECT = 1;      // 要求重新连接
+        COMMAND_UPDATE_CONFIG = 2;   // 要求更新配置
+        COMMAND_SELF_TEST = 3;       // 要求自检
+        COMMAND_LOG_COLLECT = 4;     // 要求收集日志
+    }
+    
+    CommandType type = 1;
+    string command_id = 2;
+    google.protobuf.Timestamp valid_until = 3;
+    map<string, string> parameters = 4;
+}
+
+// 设备注销请求
+message DeviceUnregisterRequest {
+    string device_id = 1;
+    DeviceType device_type = 2;
+    string reason = 3;  // "SHUTDOWN", "ERROR", "MAINTENANCE", etc.
+}
+
+// 已注册设备响应
+message RegisteredDevicesResponse {
+    message RegisteredDevice {
+        DeviceRegistration registration = 1;
+        google.protobuf.Timestamp last_heartbeat = 2;
+        bool online = 3;
+        uint32 missed_heartbeats = 4;
+    }
+    
+    repeated RegisteredDevice devices = 1;
+    google.protobuf.Timestamp timestamp = 2;
+}
+
+// 设备注册
+message DeviceRegistration {
+    DeviceType type = 1;
+    string device_id = 2;
+    string ip_address = 3;
+    uint32 port = 4;
+    string vendor = 5;
+    string model = 6;
+    string firmware_version = 7;
+    map<string, string> capabilities = 8;
+}
+
+// 设备注册响应
+message DeviceRegistrationResponse {
+    bool success = 1;
+    string assigned_id = 2;
+    uint32 heartbeat_interval = 3;
+}
+
+// ==================== 错误代码 ====================
+
+enum ErrorCode {
+    ERROR_NONE = 0;
+    
+    // 控制卡错误 (1000-1999)
+    ERROR_CONTROL_CARD_NOT_CONNECTED = 1001;
+    ERROR_CONTROL_CARD_NOT_ENABLED = 1002;
+    ERROR_CONTROL_CARD_MOTOR_FAULT = 1003;
+    ERROR_CONTROL_CARD_LIMIT_TRIGGERED = 1004;
+    
+    // 机械臂错误 (2000-2999)
+    ERROR_ROBOT_ARM_NOT_CONNECTED = 2001;
+    ERROR_ROBOT_ARM_NOT_ENABLED = 2002;
+    ERROR_ROBOT_ARM_JOINT_FAULT = 2003;
+    ERROR_ROBOT_ARM_COLLISION = 2004;
+    ERROR_ROBOT_ARM_SINGULARITY = 2005;
+    ERROR_ROBOT_ARM_JOINT_LIMIT = 2006;
+    
+    // 运动学错误 (3000-3999)
+    ERROR_KINEMATICS_NO_SOLUTION = 3001;
+    ERROR_KINEMATICS_SINGULARITY = 3002;
+    ERROR_KINEMATICS_JOINT_LIMIT = 3003;
+    ERROR_TRAJECTORY_PLANNING_FAILED = 3004;
+    
+    // 主从模式错误 (4000-4999)
+    ERROR_MASTER_SLAVE_NOT_CALIBRATED = 4001;
+    ERROR_MASTER_SLAVE_OUT_OF_WORKSPACE = 4002;
+    ERROR_MASTER_SLAVE_LATENCY_TOO_HIGH = 4003;
+    
+    // 通信错误 (5000-5999)
+    ERROR_COMMUNICATION_TIMEOUT = 5001;
+    ERROR_DEVICE_NOT_CONNECTED = 5002;
+    ERROR_PROTOCOL_ERROR = 5003;
+    
+    // 系统错误 (6000-6999)
+    ERROR_SYSTEM_NOT_INITIALIZED = 6001;
+    ERROR_CONFIGURATION_INVALID = 6002;
+    ERROR_EMERGENCY_STOP_ACTIVE = 6003;
+}
